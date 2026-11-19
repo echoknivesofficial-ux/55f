@@ -9,12 +9,12 @@ let state = {
   extraFunds: Number(process.env.FUNDS_AMOUNT ?? 0),
   weeklyAmount: 200,
   members: [
-    { name: "Daeniel", password: "changeme" },
-    { name: "Ivan", password: "changeme" },
+    { name: "Daeniel", password: "1001" },
+    { name: "Ivan", password: "1002" },
     { name: "Aldrich", password: "7777" },
-    { name: "Jordan", password: "changeme" },
-    { name: "Yzhan", password: "changeme" },
-    { name: "Marquis", password: "changeme" }
+    { name: "Jordan", password: "1004" },
+    { name: "Yzhan", password: "1005" },
+    { name: "Marquis", password: "1006" }
   ],
   fridays: {},
   pulloutRequests: []
@@ -22,7 +22,6 @@ let state = {
 
 app.use(express.json());
 
-// Allow requests from any HTML page (local file, GitHub Pages, etc.)
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -33,7 +32,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// Serve public/index.html if present
 app.use(express.static(path.join(__dirname, "public")));
 
 function formatPhp(amount) {
@@ -44,15 +42,18 @@ function formatPhp(amount) {
   }).format(Number.isFinite(num) ? num : 0);
 }
 
-function findMemberByName(name) {
-  const target = String(name || "").trim().toLowerCase();
+function findMemberByKey(specialKey) {
+  const target = String(specialKey || "").trim();
+  if (!target) return null;
   return (state.members || []).find(
-    m => String(m.name || "").trim().toLowerCase() === target
+    m => String(m.password || "").trim() === target
   ) || null;
 }
 
-function getMemberContributed(name) {
-  const matched = findMemberByName(name);
+function getMemberContributed(memberName) {
+  const matched = (state.members || []).find(
+    m => String(m.name || "").trim().toLowerCase() === String(memberName || "").trim().toLowerCase()
+  );
 
   if (!matched) {
     return {
@@ -116,7 +117,6 @@ function checkAdmin(req, res) {
   return true;
 }
 
-// Root check
 app.get("/", (req, res) => {
   res.json({
     status: "ok",
@@ -125,7 +125,6 @@ app.get("/", (req, res) => {
   });
 });
 
-// Main funds endpoint
 app.get("/funds", (req, res) => {
   try {
     const total = calculateTotalFunds();
@@ -142,12 +141,13 @@ app.get("/funds", (req, res) => {
   }
 });
 
-// Public balance + member pull-out lookup
+// Lookup member identity & available balance by Special Key
 app.get("/public-info", (req, res) => {
   try {
     const total = calculateTotalFunds();
-    const name = req.query.name ? String(req.query.name) : "";
-    const memberInfo = name ? getMemberContributed(name) : null;
+    const key = req.query.key ? String(req.query.key) : "";
+    const matched = key ? findMemberByKey(key) : null;
+    const memberInfo = matched ? getMemberContributed(matched.name) : null;
 
     res.json({
       totalFunds: total,
@@ -161,27 +161,15 @@ app.get("/public-info", (req, res) => {
   }
 });
 
-// Submit pull-out request (requires member's special password)
+// Submit pull-out request using Special Key
 app.post("/pullout-request", (req, res) => {
   try {
-    const { fullName, memberPassword, amount, agreedTos } = req.body || {};
+    const { specialKey, amount, agreedTos } = req.body || {};
 
-    if (!fullName || typeof fullName !== "string" || fullName.trim().length < 2) {
-      return res.status(400).json({
-        error: "Please enter your name."
-      });
-    }
-
-    const memberObj = findMemberByName(fullName);
+    const memberObj = findMemberByKey(specialKey);
     if (!memberObj) {
-      return res.status(404).json({
-        error: "Name not found in member list."
-      });
-    }
-
-    if (!memberPassword || String(memberPassword) !== String(memberObj.password)) {
       return res.status(401).json({
-        error: "Incorrect special password for this member."
+        error: "Invalid Special Key. No member matches this key."
       });
     }
 
@@ -237,30 +225,32 @@ app.get("/admin/state", (req, res) => {
   }
 });
 
-// Admin update funds, members, or Fridays
+// Admin update funds, members (name + key), Fridays, or pulloutRequests
 app.post("/admin/update", (req, res) => {
   if (!checkAdmin(req, res)) return;
   try {
-    const { extraFunds, members, fridays } = req.body || {};
+    const { extraFunds, members, fridays, pulloutRequests } = req.body || {};
 
     if (typeof extraFunds === "number" && Number.isFinite(extraFunds)) {
       state.extraFunds = extraFunds;
     }
     if (Array.isArray(members)) {
       state.members = members
-        .map(m => {
+        .map((m, idx) => {
           if (typeof m === "string") {
-            const existing = findMemberByName(m);
-            return { name: m.trim(), password: existing?.password || "changeme" };
+            return { name: m.trim(), password: String(2000 + idx) };
           }
           const cleanName = String(m?.name || "").trim();
-          const cleanPass = String(m?.password || "").trim() || "changeme";
+          const cleanPass = String(m?.password || "").trim() || String(2000 + idx);
           return cleanName ? { name: cleanName, password: cleanPass } : null;
         })
         .filter(Boolean);
     }
     if (fridays && typeof fridays === "object" && !Array.isArray(fridays)) {
       state.fridays = fridays;
+    }
+    if (Array.isArray(pulloutRequests)) {
+      state.pulloutRequests = pulloutRequests;
     }
 
     const total = calculateTotalFunds();
