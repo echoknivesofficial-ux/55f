@@ -17,7 +17,8 @@ let state = {
     { name: "Marquis", password: "1006" }
   ],
   fridays: {},
-  pulloutRequests: []
+  pulloutRequests: [],
+  clientInquiries: [] // { id, clientName, contact, service, details, status: "new"|"contacted", createdAt }
 };
 
 app.use(express.json());
@@ -89,6 +90,22 @@ function getMemberContributed(memberName) {
   };
 }
 
+function getWeeklyBreakdown() {
+  const dates = Object.keys(state.fridays || {}).sort();
+  return dates.map(dateKey => {
+    const dayRecord = state.fridays[dateKey] || {};
+    let paidCount = 0;
+    for (const member of state.members || []) {
+      if (dayRecord[member.name]) paidCount++;
+    }
+    return {
+      date: dateKey,
+      paidCount,
+      total: paidCount * state.weeklyAmount
+    };
+  });
+}
+
 function calculateTotalFunds() {
   let totalContributed = 0;
   for (const dateKey of Object.keys(state.fridays || {})) {
@@ -120,8 +137,8 @@ function checkAdmin(req, res) {
 app.get("/", (req, res) => {
   res.json({
     status: "ok",
-    service: "funds-api",
-    endpoints: ["/funds", "/public-info", "/pullout-request", "/admin/state"]
+    service: "sw627-funds-api",
+    endpoints: ["/funds", "/public-info", "/pullout-request", "/inquiry", "/admin/state"]
   });
 });
 
@@ -141,7 +158,7 @@ app.get("/funds", (req, res) => {
   }
 });
 
-// Lookup member identity & available balance by Special Key
+// Public balance + weekly chart + special key member lookup
 app.get("/public-info", (req, res) => {
   try {
     const total = calculateTotalFunds();
@@ -153,6 +170,7 @@ app.get("/public-info", (req, res) => {
       totalFunds: total,
       formattedTotal: formatPhp(total),
       weeklyAmount: state.weeklyAmount,
+      weeklyChart: getWeeklyBreakdown(),
       memberInfo
     });
   } catch (err) {
@@ -209,6 +227,39 @@ app.post("/pullout-request", (req, res) => {
   }
 });
 
+// Submit Client Project Inquiry (YT Video or Website)
+app.post("/inquiry", (req, res) => {
+  try {
+    const { clientName, contact, service, details } = req.body || {};
+
+    if (!clientName || String(clientName).trim().length < 2) {
+      return res.status(400).json({ error: "Please enter your name or brand." });
+    }
+    if (!contact || String(contact).trim().length < 3) {
+      return res.status(400).json({ error: "Please enter your email, Discord, or Instagram handle." });
+    }
+    if (!details || String(details).trim().length < 5) {
+      return res.status(400).json({ error: "Please describe what you need (video style, website type, etc.)." });
+    }
+
+    const inquiry = {
+      id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      clientName: String(clientName).trim(),
+      contact: String(contact).trim(),
+      service: String(service || "Custom Website").trim(),
+      details: String(details).trim(),
+      status: "new",
+      createdAt: new Date().toISOString()
+    };
+
+    state.clientInquiries.unshift(inquiry);
+    res.json({ ok: true, inquiry });
+  } catch (err) {
+    console.error("POST /inquiry error:", err);
+    res.status(500).json({ error: "Server error submitting inquiry" });
+  }
+});
+
 // Admin state
 app.get("/admin/state", (req, res) => {
   if (!checkAdmin(req, res)) return;
@@ -217,7 +268,8 @@ app.get("/admin/state", (req, res) => {
     res.json({
       ...state,
       totalFunds: total,
-      formattedTotal: formatPhp(total)
+      formattedTotal: formatPhp(total),
+      weeklyChart: getWeeklyBreakdown()
     });
   } catch (err) {
     console.error("GET /admin/state error:", err);
@@ -225,11 +277,11 @@ app.get("/admin/state", (req, res) => {
   }
 });
 
-// Admin update funds, members (name + key), Fridays, or pulloutRequests
+// Admin update
 app.post("/admin/update", (req, res) => {
   if (!checkAdmin(req, res)) return;
   try {
-    const { extraFunds, members, fridays, pulloutRequests } = req.body || {};
+    const { extraFunds, members, fridays, pulloutRequests, clientInquiries } = req.body || {};
 
     if (typeof extraFunds === "number" && Number.isFinite(extraFunds)) {
       state.extraFunds = extraFunds;
@@ -252,6 +304,9 @@ app.post("/admin/update", (req, res) => {
     if (Array.isArray(pulloutRequests)) {
       state.pulloutRequests = pulloutRequests;
     }
+    if (Array.isArray(clientInquiries)) {
+      state.clientInquiries = clientInquiries;
+    }
 
     const total = calculateTotalFunds();
     const formatted = formatPhp(total);
@@ -260,6 +315,7 @@ app.post("/admin/update", (req, res) => {
       ...state,
       totalFunds: total,
       formattedTotal: formatted,
+      weeklyChart: getWeeklyBreakdown(),
       message: `the funds are ${formatted}`
     });
   } catch (err) {
@@ -286,11 +342,31 @@ app.post("/admin/pullout/:id", (req, res) => {
     res.json({
       ...state,
       totalFunds: total,
-      formattedTotal: formatPhp(total)
+      formattedTotal: formatPhp(total),
+      weeklyChart: getWeeklyBreakdown()
     });
   } catch (err) {
     console.error("POST /admin/pullout error:", err);
     res.status(500).json({ error: "Server error updating pull-out request" });
+  }
+});
+
+// Admin mark client inquiry contacted/deleted
+app.post("/admin/inquiry/:id", (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  try {
+    const { action } = req.body || {};
+    if (action === "delete") {
+      state.clientInquiries = state.clientInquiries.filter(i => i.id !== req.params.id);
+    } else {
+      const item = state.clientInquiries.find(i => i.id === req.params.id);
+      if (!item) return res.status(404).json({ error: "Inquiry not found" });
+      item.status = action || "contacted";
+    }
+    res.json({ ...state });
+  } catch (err) {
+    console.error("POST /admin/inquiry error:", err);
+    res.status(500).json({ error: "Server error updating inquiry" });
   }
 });
 
