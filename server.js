@@ -6,39 +6,68 @@ const PORT = process.env.PORT || 3000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Luckyboi";
 
 let state = {
-  extraFunds: Number(process.env.FUNDS_AMOUNT ?? 0), // manual additions/adjustments
+  extraFunds: Number(process.env.FUNDS_AMOUNT ?? 0),
   weeklyAmount: 200,
-  members: ["Juan V. Dela Cruz", "Maria S. Santos"],
-  fridays: {}, // { "2026-11-20": { "Juan V. Dela Cruz": true } }
-  pulloutRequests: [] // { id, fullName, amount, status: "pending"|"approved"|"rejected", createdAt }
+  members: ["Daeniel", "Ivan", "Aldrich", "Jordan", "Yzhan", "Marquis"],
+  fridays: {},
+  pulloutRequests: []
 };
 
 app.use(express.json());
+
+// Allow requests from any HTML page (local file, GitHub Pages, etc.)
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-admin-password");
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+  next();
+});
+
+// Serve public/index.html if present
 app.use(express.static(path.join(__dirname, "public")));
 
 function formatPhp(amount) {
+  const num = Number(amount);
   return new Intl.NumberFormat("en-PH", {
     style: "currency",
     currency: "PHP"
-  }).format(amount);
+  }).format(Number.isFinite(num) ? num : 0);
 }
 
 function getMemberContributed(name) {
-  const target = name.trim().toLowerCase();
-  const matchedMember = state.members.find(m => m.trim().toLowerCase() === target);
-  if (!matchedMember) return { matchedMember: null, contributed: 0, approvedPullouts: 0, available: 0 };
+  const target = String(name || "").trim().toLowerCase();
+  const matchedMember = state.members.find(
+    m => String(m).trim().toLowerCase() === target
+  );
+
+  if (!matchedMember) {
+    return {
+      matchedMember: null,
+      contributed: 0,
+      approvedPullouts: 0,
+      available: 0
+    };
+  }
 
   let paidFridays = 0;
-  for (const dateKey of Object.keys(state.fridays)) {
-    if (state.fridays[dateKey] && state.fridays[dateKey][matchedMember]) {
+  for (const dateKey of Object.keys(state.fridays || {})) {
+    const dayRecord = state.fridays[dateKey];
+    if (dayRecord && dayRecord[matchedMember]) {
       paidFridays++;
     }
   }
 
   const contributed = paidFridays * state.weeklyAmount;
-  const approvedPullouts = state.pulloutRequests
-    .filter(r => r.status === "approved" && r.fullName.trim().toLowerCase() === target)
-    .reduce((sum, r) => sum + r.amount, 0);
+  const approvedPullouts = (state.pulloutRequests || [])
+    .filter(
+      r =>
+        r.status === "approved" &&
+        String(r.fullName || "").trim().toLowerCase() === target
+    )
+    .reduce((sum, r) => sum + Number(r.amount || 0), 0);
 
   return {
     matchedMember,
@@ -50,18 +79,21 @@ function getMemberContributed(name) {
 
 function calculateTotalFunds() {
   let totalContributed = 0;
-  for (const dateKey of Object.keys(state.fridays)) {
+  for (const dateKey of Object.keys(state.fridays || {})) {
     const dayRecord = state.fridays[dateKey] || {};
-    for (const member of state.members) {
-      if (dayRecord[member]) totalContributed += state.weeklyAmount;
+    for (const member of state.members || []) {
+      if (dayRecord[member]) {
+        totalContributed += state.weeklyAmount;
+      }
     }
   }
 
-  const totalApprovedPullouts = state.pulloutRequests
+  const totalApprovedPullouts = (state.pulloutRequests || [])
     .filter(r => r.status === "approved")
-    .reduce((sum, r) => sum + r.amount, 0);
+    .reduce((sum, r) => sum + Number(r.amount || 0), 0);
 
-  return Math.max(0, state.extraFunds + totalContributed - totalApprovedPullouts);
+  const baseExtra = Number(state.extraFunds) || 0;
+  return Math.max(0, baseExtra + totalContributed - totalApprovedPullouts);
 }
 
 function checkAdmin(req, res) {
@@ -73,119 +105,175 @@ function checkAdmin(req, res) {
   return true;
 }
 
-// Public API endpoint for your bot/webhook
+// Root check
+app.get("/", (req, res) => {
+  res.json({
+    status: "ok",
+    service: "funds-api",
+    endpoints: ["/funds", "/public-info", "/pullout-request", "/admin/state"]
+  });
+});
+
+// Main funds endpoint
 app.get("/funds", (req, res) => {
-  const total = calculateTotalFunds();
-  const formatted = formatPhp(total);
-  res.json({
-    funds: total,
-    currency: "PHP",
-    formatted,
-    message: `the funds are ${formatted}`
-  });
-});
-
-// Public summary + member lookup
-app.get("/public-info", (req, res) => {
-  const total = calculateTotalFunds();
-  const name = (req.query.name || "").toString();
-  const memberInfo = name ? getMemberContributed(name) : null;
-
-  res.json({
-    totalFunds: total,
-    formattedTotal: formatPhp(total),
-    weeklyAmount: state.weeklyAmount,
-    memberInfo
-  });
-});
-
-// Public pull-out request submission
-app.post("/pullout-request", (req, res) => {
-  const { fullName, amount, agreedTos } = req.body;
-
-  if (!fullName || typeof fullName !== "string" || fullName.trim().length < 3) {
-    return res.status(400).json({ error: "Please enter your full name (e.g. Juan V. Dela Cruz)." });
-  }
-  if (!agreedTos) {
-    return res.status(400).json({ error: "You must agree to the Terms of Service." });
-  }
-  const numericAmount = Number(amount);
-  if (Number.isNaN(numericAmount) || numericAmount <= 0) {
-    return res.status(400).json({ error: "Enter a valid pull-out amount greater than ₱0." });
-  }
-
-  const info = getMemberContributed(fullName);
-  if (!info.matchedMember) {
-    return res.status(404).json({ error: "Full name not found in the member list. Check your spelling/middle initial." });
-  }
-  if (numericAmount > info.available) {
-    return res.status(400).json({
-      error: `You can only pull out up to ${formatPhp(info.available)}.`
+  try {
+    const total = calculateTotalFunds();
+    const formatted = formatPhp(total);
+    res.json({
+      funds: total,
+      currency: "PHP",
+      formatted,
+      message: `the funds are ${formatted}`
     });
+  } catch (err) {
+    console.error("GET /funds error:", err);
+    res.status(500).json({ error: "Server error reading funds" });
   }
-
-  const requestItem = {
-    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-    fullName: info.matchedMember,
-    amount: numericAmount,
-    status: "pending",
-    createdAt: new Date().toISOString()
-  };
-
-  state.pulloutRequests.unshift(requestItem);
-  res.json({ ok: true, request: requestItem });
 });
 
-// Admin: verify login & get full state
+// Public balance + member pull-out lookup
+app.get("/public-info", (req, res) => {
+  try {
+    const total = calculateTotalFunds();
+    const name = req.query.name ? String(req.query.name) : "";
+    const memberInfo = name ? getMemberContributed(name) : null;
+
+    res.json({
+      totalFunds: total,
+      formattedTotal: formatPhp(total),
+      weeklyAmount: state.weeklyAmount,
+      memberInfo
+    });
+  } catch (err) {
+    console.error("GET /public-info error:", err);
+    res.status(500).json({ error: "Server error reading public info" });
+  }
+});
+
+// Submit pull-out request
+app.post("/pullout-request", (req, res) => {
+  try {
+    const { fullName, amount, agreedTos } = req.body || {};
+
+    if (!fullName || typeof fullName !== "string" || fullName.trim().length < 3) {
+      return res.status(400).json({
+        error: "Please enter your full name (e.g. Juan V. Dela Cruz)."
+      });
+    }
+    if (!agreedTos) {
+      return res.status(400).json({
+        error: "You must agree to the Terms of Service."
+      });
+    }
+
+    const numericAmount = Number(amount);
+    if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+      return res.status(400).json({
+        error: "Enter a valid pull-out amount greater than ₱0."
+      });
+    }
+
+    const info = getMemberContributed(fullName);
+    if (!info.matchedMember) {
+      return res.status(404).json({
+        error: "Full name not found in member list. Check spelling and middle initial."
+      });
+    }
+    if (numericAmount > info.available) {
+      return res.status(400).json({
+        error: `You can only pull out up to ${formatPhp(info.available)}.`
+      });
+    }
+
+    const requestItem = {
+      id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      fullName: info.matchedMember,
+      amount: numericAmount,
+      status: "pending",
+      createdAt: new Date().toISOString()
+    };
+
+    state.pulloutRequests.unshift(requestItem);
+    res.json({ ok: true, request: requestItem });
+  } catch (err) {
+    console.error("POST /pullout-request error:", err);
+    res.status(500).json({ error: "Server error submitting pull-out request" });
+  }
+});
+
+// Admin state
 app.get("/admin/state", (req, res) => {
   if (!checkAdmin(req, res)) return;
-  res.json({
-    ...state,
-    totalFunds: calculateTotalFunds(),
-    formattedTotal: formatPhp(calculateTotalFunds())
-  });
+  try {
+    const total = calculateTotalFunds();
+    res.json({
+      ...state,
+      totalFunds: total,
+      formattedTotal: formatPhp(total)
+    });
+  } catch (err) {
+    console.error("GET /admin/state error:", err);
+    res.status(500).json({ error: "Server error reading admin state" });
+  }
 });
 
-// Admin: save members, fridays, or extraFunds
+// Admin update funds, members, or Fridays
 app.post("/admin/update", (req, res) => {
   if (!checkAdmin(req, res)) return;
+  try {
+    const { extraFunds, members, fridays } = req.body || {};
 
-  const { extraFunds, members, fridays } = req.body;
-  if (typeof extraFunds === "number" && !Number.isNaN(extraFunds)) {
-    state.extraFunds = extraFunds;
+    if (typeof extraFunds === "number" && Number.isFinite(extraFunds)) {
+      state.extraFunds = extraFunds;
+    }
+    if (Array.isArray(members)) {
+      state.members = members.map(m => String(m).trim()).filter(Boolean);
+    }
+    if (fridays && typeof fridays === "object" && !Array.isArray(fridays)) {
+      state.fridays = fridays;
+    }
+
+    const total = calculateTotalFunds();
+    const formatted = formatPhp(total);
+
+    res.json({
+      ...state,
+      totalFunds: total,
+      formattedTotal: formatted,
+      message: `the funds are ${formatted}`
+    });
+  } catch (err) {
+    console.error("POST /admin/update error:", err);
+    res.status(500).json({ error: "Server error updating state" });
   }
-  if (Array.isArray(members)) state.members = members;
-  if (fridays && typeof fridays === "object") state.fridays = fridays;
-
-  const total = calculateTotalFunds();
-  res.json({
-    ...state,
-    totalFunds: total,
-    formattedTotal: formatPhp(total),
-    message: `the funds are ${formatPhp(total)}`
-  });
 });
 
-// Admin: approve or reject a pull-out request
+// Admin approve/reject pull-out
 app.post("/admin/pullout/:id", (req, res) => {
   if (!checkAdmin(req, res)) return;
+  try {
+    const { action } = req.body || {};
+    const item = state.pulloutRequests.find(r => r.id === req.params.id);
+    if (!item) {
+      return res.status(404).json({ error: "Request not found" });
+    }
 
-  const { action } = req.body; // "approved" or "rejected"
-  const item = state.pulloutRequests.find(r => r.id === req.params.id);
-  if (!item) return res.status(404).json({ error: "Request not found" });
+    if (action === "approved" || action === "rejected") {
+      item.status = action;
+    }
 
-  if (action === "approved" || action === "rejected") {
-    item.status = action;
+    const total = calculateTotalFunds();
+    res.json({
+      ...state,
+      totalFunds: total,
+      formattedTotal: formatPhp(total)
+    });
+  } catch (err) {
+    console.error("POST /admin/pullout error:", err);
+    res.status(500).json({ error: "Server error updating pull-out request" });
   }
-
-  const total = calculateTotalFunds();
-  res.json({
-    ...state,
-    totalFunds: total,
-    formattedTotal: formatPhp(total)
-  });
 });
 
 app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
