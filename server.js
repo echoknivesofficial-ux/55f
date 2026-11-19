@@ -1,21 +1,18 @@
 const express = require("express");
-const fs = require("fs");
 const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const FUNDS_FILE = path.join(__dirname, "funds.json");
+
+let state = {
+  funds: Number(process.env.FUNDS_AMOUNT ?? 0),
+  weeklyAmount: 200,
+  members: ["Member 1", "Member 2", "Member 3"],
+  fridays: {} // { "2026-11-20": { "Member 1": true } }
+};
 
 app.use(express.json());
-
-function readFunds() {
-  const raw = fs.readFileSync(FUNDS_FILE, "utf8");
-  return JSON.parse(raw);
-}
-
-function writeFunds(data) {
-  fs.writeFileSync(FUNDS_FILE, JSON.stringify(data, null, 2), "utf8");
-}
+app.use(express.static(path.join(__dirname, "public")));
 
 function formatPhp(amount) {
   return new Intl.NumberFormat("en-PH", {
@@ -24,53 +21,36 @@ function formatPhp(amount) {
   }).format(amount);
 }
 
-// Health check for Render
-app.get("/", (req, res) => {
-  res.json({ status: "ok", endpoint: "/funds" });
-});
-
-// Returns both structured JSON and a formatted PHP sentence
 app.get("/funds", (req, res) => {
-  try {
-    const data = readFunds();
-    const formatted = formatPhp(data.funds);
-    res.json({
-      funds: data.funds,
-      currency: "PHP",
-      formatted,
-      message: `the funds are ${formatted}`
-    });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to read funds data" });
-  }
+  const formatted = formatPhp(state.funds);
+  res.json({
+    funds: state.funds,
+    currency: "PHP",
+    formatted,
+    message: `the funds are ${formatted}`
+  });
 });
 
-// Optional: update funds via POST (set API_KEY in Render Environment Variables)
-app.post("/funds", (req, res) => {
+app.get("/tracker", (req, res) => {
+  res.json(state);
+});
+
+app.post("/tracker", (req, res) => {
   const apiKey = process.env.API_KEY;
   if (apiKey && req.headers["x-api-key"] !== apiKey) {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
-  const { funds } = req.body;
-  if (typeof funds !== "number" || Number.isNaN(funds)) {
-    return res.status(400).json({ error: "Body must include a numeric 'funds' field" });
-  }
-
-  const nextData = {
-    funds,
-    currency: "PHP",
-    updatedAt: new Date().toISOString()
-  };
-
-  writeFunds(nextData);
-  const formatted = formatPhp(nextData.funds);
+  const { funds, weeklyAmount, members, fridays } = req.body;
+  if (typeof funds === "number" && !Number.isNaN(funds)) state.funds = funds;
+  if (typeof weeklyAmount === "number") state.weeklyAmount = weeklyAmount;
+  if (Array.isArray(members)) state.members = members;
+  if (fridays && typeof fridays === "object") state.fridays = fridays;
 
   res.json({
-    funds: nextData.funds,
-    currency: "PHP",
-    formatted,
-    message: `the funds are ${formatted}`
+    ...state,
+    formatted: formatPhp(state.funds),
+    message: `the funds are ${formatPhp(state.funds)}`
   });
 });
 
