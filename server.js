@@ -8,7 +8,14 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Luckyboi";
 let state = {
   extraFunds: Number(process.env.FUNDS_AMOUNT ?? 0),
   weeklyAmount: 200,
-  members: ["Daeniel", "Ivan", "Aldrich", "Jordan", "Yzhan", "Marquis"],
+  members: [
+    { name: "Daeniel", password: "changeme" },
+    { name: "Ivan", password: "changeme" },
+    { name: "Aldrich", password: "7777" },
+    { name: "Jordan", password: "changeme" },
+    { name: "Yzhan", password: "changeme" },
+    { name: "Marquis", password: "changeme" }
+  ],
   fridays: {},
   pulloutRequests: []
 };
@@ -37,13 +44,17 @@ function formatPhp(amount) {
   }).format(Number.isFinite(num) ? num : 0);
 }
 
-function getMemberContributed(name) {
+function findMemberByName(name) {
   const target = String(name || "").trim().toLowerCase();
-  const matchedMember = state.members.find(
-    m => String(m).trim().toLowerCase() === target
-  );
+  return (state.members || []).find(
+    m => String(m.name || "").trim().toLowerCase() === target
+  ) || null;
+}
 
-  if (!matchedMember) {
+function getMemberContributed(name) {
+  const matched = findMemberByName(name);
+
+  if (!matched) {
     return {
       matchedMember: null,
       contributed: 0,
@@ -55,7 +66,7 @@ function getMemberContributed(name) {
   let paidFridays = 0;
   for (const dateKey of Object.keys(state.fridays || {})) {
     const dayRecord = state.fridays[dateKey];
-    if (dayRecord && dayRecord[matchedMember]) {
+    if (dayRecord && dayRecord[matched.name]) {
       paidFridays++;
     }
   }
@@ -65,12 +76,12 @@ function getMemberContributed(name) {
     .filter(
       r =>
         r.status === "approved" &&
-        String(r.fullName || "").trim().toLowerCase() === target
+        String(r.fullName || "").trim().toLowerCase() === matched.name.toLowerCase()
     )
     .reduce((sum, r) => sum + Number(r.amount || 0), 0);
 
   return {
-    matchedMember,
+    matchedMember: matched.name,
     contributed,
     approvedPullouts,
     available: Math.max(0, contributed - approvedPullouts)
@@ -82,7 +93,7 @@ function calculateTotalFunds() {
   for (const dateKey of Object.keys(state.fridays || {})) {
     const dayRecord = state.fridays[dateKey] || {};
     for (const member of state.members || []) {
-      if (dayRecord[member]) {
+      if (dayRecord[member.name]) {
         totalContributed += state.weeklyAmount;
       }
     }
@@ -150,16 +161,30 @@ app.get("/public-info", (req, res) => {
   }
 });
 
-// Submit pull-out request
+// Submit pull-out request (requires member's special password)
 app.post("/pullout-request", (req, res) => {
   try {
-    const { fullName, amount, agreedTos } = req.body || {};
+    const { fullName, memberPassword, amount, agreedTos } = req.body || {};
 
-    if (!fullName || typeof fullName !== "string" || fullName.trim().length < 3) {
+    if (!fullName || typeof fullName !== "string" || fullName.trim().length < 2) {
       return res.status(400).json({
-        error: "Please enter your full name (e.g. Juan V. Dela Cruz)."
+        error: "Please enter your name."
       });
     }
+
+    const memberObj = findMemberByName(fullName);
+    if (!memberObj) {
+      return res.status(404).json({
+        error: "Name not found in member list."
+      });
+    }
+
+    if (!memberPassword || String(memberPassword) !== String(memberObj.password)) {
+      return res.status(401).json({
+        error: "Incorrect special password for this member."
+      });
+    }
+
     if (!agreedTos) {
       return res.status(400).json({
         error: "You must agree to the Terms of Service."
@@ -173,12 +198,7 @@ app.post("/pullout-request", (req, res) => {
       });
     }
 
-    const info = getMemberContributed(fullName);
-    if (!info.matchedMember) {
-      return res.status(404).json({
-        error: "Full name not found in member list. Check spelling and middle initial."
-      });
-    }
+    const info = getMemberContributed(memberObj.name);
     if (numericAmount > info.available) {
       return res.status(400).json({
         error: `You can only pull out up to ${formatPhp(info.available)}.`
@@ -187,7 +207,7 @@ app.post("/pullout-request", (req, res) => {
 
     const requestItem = {
       id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-      fullName: info.matchedMember,
+      fullName: memberObj.name,
       amount: numericAmount,
       status: "pending",
       createdAt: new Date().toISOString()
@@ -227,7 +247,17 @@ app.post("/admin/update", (req, res) => {
       state.extraFunds = extraFunds;
     }
     if (Array.isArray(members)) {
-      state.members = members.map(m => String(m).trim()).filter(Boolean);
+      state.members = members
+        .map(m => {
+          if (typeof m === "string") {
+            const existing = findMemberByName(m);
+            return { name: m.trim(), password: existing?.password || "changeme" };
+          }
+          const cleanName = String(m?.name || "").trim();
+          const cleanPass = String(m?.password || "").trim() || "changeme";
+          return cleanName ? { name: cleanName, password: cleanPass } : null;
+        })
+        .filter(Boolean);
     }
     if (fridays && typeof fridays === "object" && !Array.isArray(fridays)) {
       state.fridays = fridays;
